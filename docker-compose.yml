@@ -1,0 +1,14 @@
+services:
+  web-app:
+    build: .
+    container_name: modelscope_web_downloader
+    ports:
+      - "8000:8000"
+    environment:
+      - MODELSCOPE_API_KEY=${MODELSCOPE_API_KEY}
+      - DOWNLOAD_DIR=${DOWNLOAD_DIR}
+    volumes:
+      - ./models:/models
+    restart: unless-stopped
+
+  # 可选：如果需要更复杂的任务队列，可以在这里添加 Redis 和 Celery

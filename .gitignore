@@ -1,0 +1,10 @@
+# 本地下载目录（模型权重）
+models/
+
+# 环境变量与密钥
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
