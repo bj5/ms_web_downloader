@@ -105,7 +105,7 @@ curl http://localhost:8000/api/status
 - **状态存储在 Redis**：hash `download_status`（field = model_id，value = 进度 JSON），数据落在 `redis_data` 卷，web 容器重启后状态仍在；字段没有 TTL，如需自动清理可改为每个模型一个带过期时间的 key。
 - **进度粒度**：每个文件完成后 `files_done` 才 +1；正在下载的文件按临时文件实际大小估算（每 2 秒上报一次），所以百分比会走动。若 modelscope 命中缓存直接跳过下载，估算值为 0 直到该文件完成。单个文件内没有真正的传输速率数据，详细 tqdm 输出只在容器日志里。
 - **缓存元数据**：modelscope 会在每个仓库目录写 `.mdl` / `.msc`，并在 `MODEL_HOST_DIR` 根目录写 `.lock` / `._____temp`。用其他工具（hf CLI、llama.cpp）预先下载的文件没有这些元数据，modelscope 会重新下载一遍。
-- **后台任务仍是进程内线程池**：容器重启会中断进行中的下载，Redis 里的状态会停留在 `Downloading...`（重启后这条记录不会自动清理，需要 `HDEL download_status <model_id>`）；要真正解耦需要队列（如 Celery / RQ）。modelscope 不支持断点续传：中断时正在写的文件在 `._____temp` 留下部分数据，重新提交会从头下这个文件，已完成的文件则命中缓存跳过。
+- **后台任务仍是进程内线程池**：容器重启会中断进行中的下载，Redis 里的状态会停留在 `Downloading...`（重启后这条记录不会自动清理，需要 `HDEL download_status <model_id>`）；要真正解耦需要队列（如 Celery / RQ）。中断后已完成的文件命中缓存跳过；未完成的文件在 `._____temp` 里留下部分数据，重新提交会**续传**（modelscope 用 `Range: bytes=<已下载长度>-` 从部分文件继续），所以重启容器不会丢失正在下载的文件，前提是不要删除 `._____temp` 里的内容。重启后 Redis 里的旧记录不会自动清理（`bytes_done` 是重启前的值），重新提交任务即恢复真实进度。
 - **模型列表完全来自 ModelScope OpenAPI**（已移除内置演示数据）：页面在浏览器加载时请求 `/api/models`，离线时列表为空；搜索失败返回 502 `{"detail": "..."}`。
 - **搜索命中的模型可能非常大**：例如 `MiniMax/MiniMax-H3-Image` 仓库约 204 GB（Comfy-Org 重打包版约 142 GB），需要足够的磁盘空间；它的 text encoder 在另一个仓库 `MiniMax/MiniMax-H3`，`snapshot_download` 不会自动拉取。
 - **受限模型需要登录**：启动时若 `MODELSCOPE_API_KEY` 不是占位符会调用 `HubApi.login()`，此时私有或受限仓库才能访问；否则请求是匿名的，受限仓库返回 401/403。登录失败只记录 warning，应用继续以匿名方式运行。
