@@ -69,11 +69,22 @@ docker tag docker.m.daocloud.io/library/python:3.9-slim python:3.9-slim
     "bytes_total": 60983656,
     "bytes_done": 60983656,
     "current_file": "vocab.txt"
+  },
+  "Comfy-Org/MiniMax-H3": {
+    "model_id": "Comfy-Org/MiniMax-H3",
+    "state": "Downloading",
+    "files_total": 41,
+    "files_done": 4,
+    "bytes_total": 534682335839,
+    "bytes_done": 13555990528,
+    "current_file": "diffusion_models/minimax_h3_fl2va_bf16.safetensors"
   }
 }
 ```
 
 页面上的状态区每 3 秒轮询这个接口，渲染文件数、字节数与进度条。
+
+`bytes_done` 包含正在下载的文件已写入的字节：下载线程旁有一个监控线程，读取 modelscope 写入中的临时文件（`MODEL_HOST_DIR/._____temp/<model_id>/<文件路径>`），每 `PROGRESS_FLUSH_SECONDS`（默认 2 秒）把进度写回 Redis，所以单个大文件下载过程中百分比也会走动。
 
 示例：
 
@@ -92,12 +103,12 @@ curl http://localhost:8000/api/status
 ## 说明与已知限制
 
 - **状态存储在 Redis**：hash `download_status`（field = model_id，value = 进度 JSON），数据落在 `redis_data` 卷，web 容器重启后状态仍在；字段没有 TTL，如需自动清理可改为每个模型一个带过期时间的 key。
-- **进度以文件为粒度**：每个文件下载完成后才更新一次，单个超大文件（如 60 GB 的 `pytorch_model.bin`）下载过程中百分比不变；文件内的实时进度只在容器日志里（modelscope 的 tqdm 输出）。
+- **进度粒度**：每个文件完成后 `files_done` 才 +1；正在下载的文件按临时文件实际大小估算（每 2 秒上报一次），所以百分比会走动。若 modelscope 命中缓存直接跳过下载，估算值为 0 直到该文件完成。单个文件内没有真正的传输速率数据，详细 tqdm 输出只在容器日志里。
 - **缓存元数据**：modelscope 会在每个仓库目录写 `.mdl` / `.msc`，并在 `MODEL_HOST_DIR` 根目录写 `.lock` / `._____temp`。用其他工具（hf CLI、llama.cpp）预先下载的文件没有这些元数据，modelscope 会重新下载一遍。
-- **后台任务仍是进程内线程池**：容器重启会中断进行中的下载，Redis 里的状态会停留在 `Downloading...`；要真正解耦需要队列（如 Celery / RQ）。
+- **后台任务仍是进程内线程池**：容器重启会中断进行中的下载，Redis 里的状态会停留在 `Downloading...`（重启后这条记录不会自动清理，需要 `HDEL download_status <model_id>`）；要真正解耦需要队列（如 Celery / RQ）。modelscope 不支持断点续传：中断时正在写的文件在 `._____temp` 留下部分数据，重新提交会从头下这个文件，已完成的文件则命中缓存跳过。
 - **模型列表完全来自 ModelScope OpenAPI**（已移除内置演示数据）：页面在浏览器加载时请求 `/api/models`，离线时列表为空；搜索失败返回 502 `{"detail": "..."}`。
 - **搜索命中的模型可能非常大**：例如 `MiniMax/MiniMax-H3-Image` 仓库约 204 GB（Comfy-Org 重打包版约 142 GB），需要足够的磁盘空间；它的 text encoder 在另一个仓库 `MiniMax/MiniMax-H3`，`snapshot_download` 不会自动拉取。
-- **受限模型需要登录**：`MODELSCOPE_API_KEY` 当前未参与任何请求，私有或受限仓库会返回 401/403。
+- **受限模型需要登录**：启动时若 `MODELSCOPE_API_KEY` 不是占位符会调用 `HubApi.login()`，此时私有或受限仓库才能访问；否则请求是匿名的，受限仓库返回 401/403。登录失败只记录 warning，应用继续以匿名方式运行。
 - **运行身份**：compose 以 `HOST_UID:HOST_GID`（默认 `1000:1000`）运行，下载文件归属当前用户；`HOME=/tmp` 是 modelscope 凭据目录所需，否则非 root 启动会报 `PermissionError`。
 - **并发**：Redis 的字段写入是原子的，不再有进程内字典加锁问题；但同一模型重复提交时后写入的状态会覆盖前一个，多个 worker 需要自行约定（例如 `SETNX` 或队列消息）。
 
