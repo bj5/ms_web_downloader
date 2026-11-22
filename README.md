@@ -32,7 +32,7 @@ docker pull docker.m.daocloud.io/library/python:3.9-slim
 docker tag docker.m.daocloud.io/library/python:3.9-slim python:3.9-slim
 ```
 
-（当前 `Dockerfile` 已直接使用该镜像源地址，如网络可直连可改回 `python:3.9-slim`。）
+（`Dockerfile` 使用官方 `python:3.9-slim`；上面的方式仅作为访问 Docker Hub 受阻时的替代方案，也可以在 `~/.docker/daemon.json` 里配置 registry mirror。）
 
 ## 环境变量
 

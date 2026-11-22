@@ -1,5 +1,4 @@
-# 基础镜像（Docker Hub 不可达时走 daocloud 镜像源；恢复直连后可改回 python:3.9-slim）
-FROM docker.m.daocloud.io/library/python:3.9-slim
+FROM python:3.9-slim
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y \
