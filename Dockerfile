@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir \
     jinja2 \
     modelscope \
     requests \
+    redis \
     python-multipart
 
 WORKDIR /app
