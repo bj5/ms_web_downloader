@@ -21,6 +21,8 @@ WORKDIR /app
 # 设置环境变量
 ENV DOWNLOAD_DIR=/models
 ENV PORT=8000
+# modelscope 需要一个可写的 HOME（非 root 运行时 ~ 可能指向不可写目录）
+ENV HOME=/tmp
 
 # 复制项目文件
 COPY ./app /app/app
