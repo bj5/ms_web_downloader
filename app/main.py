@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import os
 import logging
 import json
+import threading
 import requests
 import redis
 from modelscope.hub.api import HubApi
@@ -28,6 +29,7 @@ if not os.path.exists(DOWNLOAD_DIR):
 # Status storage: Redis hash `download_status` (field = model_id, value = JSON progress)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 STATUS_KEY = "download_status"
+PROGRESS_FLUSH_SECONDS = 2.0
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 hub_api = HubApi()
@@ -125,7 +127,7 @@ async def start_download(data: dict, background_tasks: BackgroundTasks):
     return {"message": f"Started downloading {model_id}"}
 
 def run_download(model_id: str):
-    # Progress is tracked per file, which is what ModelScope reports for each repo
+    # Progress is tracked per file, plus the bytes written for the file in progress
     try:
         files = [f for f in hub_api.get_model_files(model_id, recursive=True) if f.get("Type") != "tree"]
     except Exception as e:
@@ -133,6 +135,7 @@ def run_download(model_id: str):
         safe_save_status(model_id, {"model_id": model_id, "state": f"Failed: {e}"})
         return
 
+    lock = threading.Lock()
     progress = {
         "model_id": model_id,
         "state": "Downloading",
@@ -142,23 +145,52 @@ def run_download(model_id: str):
         "bytes_done": 0,
         "current_file": "",
     }
-    safe_save_status(model_id, progress)
+
+    def flush():
+        safe_save_status(model_id, dict(progress))
+
+    # modelscope writes the in-flight file under <cache_dir>/._____temp/<model_id>/<file>
+    temp_root = os.path.join(DOWNLOAD_DIR, "._____temp", model_id)
+    flush()
 
     for f in files:
         # Path is the repo-relative path; Name is only the basename
         file_path = f.get("Path") or f.get("Name")
+        expected = int(f.get("Size") or 0)
+        base = progress["bytes_done"]
+        stop = threading.Event()
+
+        def watch(path=file_path, exp=expected, start=base):
+            while not stop.wait(PROGRESS_FLUSH_SECONDS):
+                try:
+                    written = os.path.getsize(os.path.join(temp_root, path))
+                except OSError:
+                    written = 0
+                with lock:
+                    progress["current_file"] = path
+                    progress["bytes_done"] = start + min(written, exp)
+                    flush()
+
+        worker = threading.Thread(target=watch, daemon=True)
+        worker.start()
+
         try:
             model_file_download(model_id, file_path, cache_dir=DOWNLOAD_DIR)
         except Exception as e:
             logger.exception("Failed on file %s of %s", file_path, model_id)
+            stop.set()
+            worker.join()
             progress["state"] = f"Failed: {e}"
-            safe_save_status(model_id, progress)
+            flush()
             return
 
-        progress["files_done"] += 1
-        progress["bytes_done"] += int(f.get("Size") or 0)
-        progress["current_file"] = file_path
-        safe_save_status(model_id, progress)
+        stop.set()
+        worker.join()
+        with lock:
+            progress["files_done"] += 1
+            progress["bytes_done"] = base + expected
+            progress["current_file"] = file_path
+        flush()
 
     progress["state"] = "Completed"
     safe_save_status(model_id, progress)
